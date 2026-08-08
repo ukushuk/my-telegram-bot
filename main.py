@@ -62,12 +62,12 @@ async def admin_help(message: Message):
 @dp.message(Command("stats"), F.from_user.id == ADMIN_ID)
 async def admin_stats(message: Message):
     with sqlite3.connect(DB_PATH) as conn:
-        total = conn.execute("SELECT COUNT(*) FROM forwarded_messages").fetchone()[0]
-        unique = conn.execute("SELECT COUNT(DISTINCT user_id) FROM forwarded_messages").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM forwarded_messages").fetchone()
+        unique = conn.execute("SELECT COUNT(DISTINCT user_id) FROM forwarded_messages").fetchone()
         top = conn.execute("SELECT user_id, COUNT(*) as c FROM forwarded_messages GROUP BY user_id ORDER BY c DESC LIMIT 5").fetchall()
     
-    top_text = "\n".join([f"👤 {u[0]}: {u[1]} сообщ." for u in top])
-    await message.answer(f"📊 <b>Статистика:</b>\nВсего сообщений: {total}\nЛюдей: {unique}\n\n<b>ТОП 5:</b>\n{top_text}")
+    top_text = "\n".join([f"👤 {u}: {u} сообщ." for u in top])
+    await message.answer(f"📊 <b>Статистика:</b>\nВсего сообщений: {total[0] if total else 0}\nЛюдей: {unique[0] if unique else 0}\n\n<b>ТОП 5:</b>\n{top_text}")
 
 @dp.message(Command("block"), F.from_user.id == ADMIN_ID)
 async def admin_block(message: Message):
@@ -94,7 +94,7 @@ async def admin_unblock(message: Message):
         uid = int(message.text.split()[1])
         with sqlite3.connect(DB_PATH) as conn:
             conn.
-[08.08.2026 23:09] ゛: execute("DELETE FROM blocked_users WHERE user_id = ?", (uid,))
+[08.08.2026 23:22] ゛: execute("DELETE FROM blocked_users WHERE user_id = ?", (uid,))
         await message.answer(f"✅ Пользователь {uid} разблокирован.")
     except:
         await message.answer("Пример: /unblock 12345678")
@@ -135,6 +135,7 @@ async def user_start(message: Message):
 
 @dp.message(F.chat.type == "private")
 async def handle_private(message: Message):
+    # Если пишет АДМИНИСТРАТОР
     if message.from_user.id == ADMIN_ID:
         if message.reply_to_message:
             try:
@@ -147,6 +148,7 @@ async def handle_private(message: Message):
                 await message.answer("❌ Ошибка: Сделайте Reply именно на инфо-карточку, где написан ID пользователя.")
         return
 
+    # Если пишет обычный ПОЛЬЗОВАТЕЛЬ
     if is_blocked(message.from_user.id):
         return
 
@@ -154,6 +156,7 @@ async def handle_private(message: Message):
         conn.execute("INSERT INTO forwarded_messages (user_id) VALUES (?)", (message.from_user.id,))
         conn.commit()
 
+    # Сначала бот шлет инфо-карточку
     info_text = (
         f"📩 <b>Новое сообщение</b>\n"
         f"От: {message.from_user.full_name}\n"
@@ -161,6 +164,8 @@ async def handle_private(message: Message):
         f"---------------------------"
     )
     await bot.send_message(chat_id=ADMIN_ID, text=info_text)
+    
+    # Следом бот пересылает само медиа (фото, голос, стикер, видео)
     await message.send_copy(chat_id=ADMIN_ID)
 
 async def main():
