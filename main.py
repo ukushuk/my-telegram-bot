@@ -51,7 +51,7 @@ async def admin_help(message: Message):
         "✅ /unblock [id] — Разбанить\n"
         "📋 /blocked — Список банов\n"
         "✖️ /cancel — Отмена рассылки\n\n"
-        "Чтобы ответить пользователю — просто сделайте <b>Reply</b> на его сообщение."
+        "Чтобы ответить пользователю — просто сделайте <b>Reply</b> на сообщение с его ID."
     )
 
 @dp.message(Command("stats"), F.from_user.id == ADMIN_ID)
@@ -68,7 +68,9 @@ async def admin_stats(message: Message):
 async def admin_block(message: Message):
     uid = None
     if message.reply_to_message:
-        try: uid = int(message.reply_to_message.text.split("ID:")[1].split("\n")[0].strip())
+        try:
+            reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+            uid = int(reply_text.split("ID:")[1].split("\n")[0].strip())
         except: pass
     elif len(message.text.split()) > 1:
         uid = int(message.text.split()[1])
@@ -78,7 +80,7 @@ async def admin_block(message: Message):
             conn.execute("INSERT OR IGNORE INTO blocked_users (user_id) VALUES (?)", (uid,))
         await message.answer(f"🚫 Пользователь {uid} заблокирован.")
     else:
-        await message.answer("Укажите ID или ответьте на сообщение.")
+        await message.answer("Укажите ID или ответьте на сообщение-карточку пользователя.")
 
 @dp.message(Command("unblock"), F.from_user.id == ADMIN_ID)
 async def admin_unblock(message: Message):
@@ -104,7 +106,7 @@ async def admin_cancel(message: Message, state: FSMContext):
 
 @dp.message(Command("broadcast"), F.from_user.id == ADMIN_ID)
 async def admin_broad(message: Message, state: FSMContext):
-    await message.answer("Введите сообщение для рассылки (текст/фото):")
+    await message.answer("Введите сообщение для рассылки (это может быть текст, фото, стикер или любое медиа):")
     await state.set_state(BroadcastStates.waiting_for_content)
 
 @dp.message(BroadcastStates.waiting_for_content, F.from_user.id == ADMIN_ID)
@@ -114,42 +116,55 @@ async def admin_broad_send(message: Message, state: FSMContext):
     count = 0
     for (uid,) in users:
         try:
-            await message.copy_to(chat_id=uid)
+            # send_copy позволяет рассылать любые типы медиафайлов
+            await message.send_copy(chat_id=uid)
             count += 1
         except: pass
     await message.answer(f"✅ Рассылка завершена. Отправлено: {count}")
     await state.clear()
 
-# --- ЛОГИКА ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ---
+# --- ЛОГИКА ДЛЯ ПОЛЬЗОВАТЕЛЕЙ И ПЕРЕСЫЛКИ МЕДИА ---
 @dp.message(CommandStart())
 async def user_start(message: Message):
     await message.answer("━━━━━━━━━━━━━\n° 𝔠𝔩𝔞𝔴 𝔫𝔬𝔦𝔯\n━━━━━━━━━━━━━━\n\n— Приветствую. Что тебя сюда занесло?)")
 
 @dp.message(F.chat.type == "private")
 async def handle_private(message: Message):
+    # Если пишет АДМИНИСТРАТОР
     if message.from_user.id == ADMIN_ID:
         if message.reply_to_message:
             try:
-                text = message.reply_to_message.text or message.reply_to_message.caption
-                target_id = int(text.split("ID:")[1].split("\n")[0].strip())
-                await message.copy_to(chat_id=target_id)
+                # Ищем ID в тексте сообщения, на которое сделан Reply
+                reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+                target_id = int(reply_text.split("ID:")[1].split("\n")[0].strip())
+                
+                # Пересылаем точную копию ответа админа (любое медиа/текст/голос) пользователю
+                await message.send_copy(chat_id=target_id)
                 await message.answer("✅ Ответ отправлен.")
-            except:
-                await message.answer("❌ Ошибка: Не найден ID в сообщении.")
+            except Exception as e:
+                await message.answer("❌ Ошибка: Сделайте Reply именно на сообщение-карточку с ID пользователя.")
         return
 
+    # Если пишет обычный ПОЛЬЗОВАТЕЛЬ
     if is_blocked(message.from_user.id):
         return
 
+    # Записываем пользователя в БД для статистики и рассылок
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("INSERT INTO forwarded_messages (user_id) VALUES (?)", (message.from_user.id,))
         conn.commit()
 
-    await bot.send_message(
-        ADMIN_ID,
-        f"📩 <b>Новое сообщение</b>\nОт: {message.from_user.full_name}\nID:{message.from_user.id}\n"
-        f"---------------------------\n{message.text or '[Медиа]'}"
+    # Шаг 1: Отправляем админу инфо-карточку. Именно на неё админ будет отвечать через Reply
+    info_text = (
+        f"📩 <b>Новое сообщение</b>\n"
+        f"От: {message.from_user.full_name}\n"
+        f"ID:{message.from_user.id}\n"
+        f"---------------------------"
     )
+    await bot.send_message(chat_id=ADMIN_ID, text=info_text)
+    
+    # Шаг 2: Отправляем админу само сообщение или медиафайл (фото, стикер, голос, видео, документ) в чистом виде
+    await message.send_copy(chat_id=ADMIN_ID)
 
 async def main():
     init_db()
