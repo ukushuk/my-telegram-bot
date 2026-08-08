@@ -1,4 +1,4 @@
-import asyncio
+[08.08.2026 23:05] ゛: import asyncio
 import logging
 import os
 import sqlite3
@@ -26,7 +26,6 @@ dp = Dispatcher(storage=MemoryStorage())
 class BroadcastStates(StatesGroup):
     waiting_for_content = State()
 
-# --- БАЗА ДАННЫХ ---
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS forwarded_messages (user_id INTEGER, created_at INTEGER DEFAULT (strftime('%s','now')))")
@@ -37,7 +36,6 @@ def is_blocked(user_id):
     with sqlite3.connect(DB_PATH) as conn:
         return conn.execute("SELECT 1 FROM blocked_users WHERE user_id = ?", (user_id,)).fetchone() is not None
 
-# --- ХЕНДЛЕРЫ АДМИНА ---
 @dp.message(Command("start"), F.from_user.id == ADMIN_ID)
 async def admin_start(message: Message):
     await message.answer("🛠 <b>Панель администратора включена.</b>\nВведите /help для списка команд.")
@@ -73,7 +71,8 @@ async def admin_block(message: Message):
             uid = int(reply_text.split("ID:")[1].split("\n")[0].strip())
         except: pass
     elif len(message.text.split()) > 1:
-        uid = int(message.text.split()[1])
+        try: uid = int(message.text.split()[1])
+        except: pass
     
     if uid:
         with sqlite3.connect(DB_PATH) as conn:
@@ -93,7 +92,7 @@ async def admin_unblock(message: Message):
         await message.answer("Пример: /unblock 12345678")
 
 @dp.message(Command("blocked"), F.from_user.id == ADMIN_ID)
-async def admin_blocked_list(message: Message):
+[08.08.2026 23:05] ゛: async def admin_blocked_list(message: Message):
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("SELECT user_id FROM blocked_users").fetchall()
     text = "\n".join([f"• {r[0]}" for r in rows]) if rows else "Список пуст."
@@ -116,45 +115,37 @@ async def admin_broad_send(message: Message, state: FSMContext):
     count = 0
     for (uid,) in users:
         try:
-            # send_copy позволяет рассылать любые типы медиафайлов
             await message.send_copy(chat_id=uid)
             count += 1
         except: pass
     await message.answer(f"✅ Рассылка завершена. Отправлено: {count}")
     await state.clear()
 
-# --- ЛОГИКА ДЛЯ ПОЛЬЗОВАТЕЛЕЙ И ПЕРЕСЫЛКИ МЕДИА ---
 @dp.message(CommandStart())
 async def user_start(message: Message):
     await message.answer("━━━━━━━━━━━━━\n° 𝔠𝔩𝔞𝔴 𝔫𝔬𝔦𝔯\n━━━━━━━━━━━━━━\n\n— Приветствую. Что тебя сюда занесло?)")
 
 @dp.message(F.chat.type == "private")
 async def handle_private(message: Message):
-    # Если пишет АДМИНИСТРАТОР
     if message.from_user.id == ADMIN_ID:
         if message.reply_to_message:
             try:
-                # Ищем ID в тексте сообщения, на которое сделан Reply
                 reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
                 target_id = int(reply_text.split("ID:")[1].split("\n")[0].strip())
                 
-                # Пересылаем точную копию ответа админа (любое медиа/текст/голос) пользователю
                 await message.send_copy(chat_id=target_id)
                 await message.answer("✅ Ответ отправлен.")
             except Exception as e:
-                await message.answer("❌ Ошибка: Сделайте Reply именно на сообщение-карточку с ID пользователя.")
+                await message.answer("❌ Ошибка: Сделайте Reply именно на инфо-карточку, где написан ID пользователя.")
         return
 
-    # Если пишет обычный ПОЛЬЗОВАТЕЛЬ
     if is_blocked(message.from_user.id):
         return
 
-    # Записываем пользователя в БД для статистики и рассылок
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("INSERT INTO forwarded_messages (user_id) VALUES (?)", (message.from_user.id,))
         conn.commit()
 
-    # Шаг 1: Отправляем админу инфо-карточку. Именно на неё админ будет отвечать через Reply
     info_text = (
         f"📩 <b>Новое сообщение</b>\n"
         f"От: {message.from_user.full_name}\n"
@@ -163,7 +154,6 @@ async def handle_private(message: Message):
     )
     await bot.send_message(chat_id=ADMIN_ID, text=info_text)
     
-    # Шаг 2: Отправляем админу само сообщение или медиафайл (фото, стикер, голос, видео, документ) в чистом виде
     await message.send_copy(chat_id=ADMIN_ID)
 
 async def main():
@@ -171,5 +161,5 @@ async def main():
     keep_alive()
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
+if name == "__main__":
     asyncio.run(main())
