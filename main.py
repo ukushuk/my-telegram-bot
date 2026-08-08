@@ -1,4 +1,4 @@
-[08.08.2026 23:05] ゛: import asyncio
+import asyncio
 import logging
 import os
 import sqlite3
@@ -36,6 +36,13 @@ def is_blocked(user_id):
     with sqlite3.connect(DB_PATH) as conn:
         return conn.execute("SELECT 1 FROM blocked_users WHERE user_id = ?", (user_id,)).fetchone() is not None
 
+# Функция для безопасного извлечения ID из инфо-карточки
+def extract_user_id(text: str) -> int:
+    for line in text.split("\n"):
+        if line.startswith("ID:"):
+            return int(line.replace("ID:", "").strip())
+    raise ValueError("ID не найден в тексте")
+
 @dp.message(Command("start"), F.from_user.id == ADMIN_ID)
 async def admin_start(message: Message):
     await message.answer("🛠 <b>Панель администратора включена.</b>\nВведите /help для списка команд.")
@@ -49,7 +56,7 @@ async def admin_help(message: Message):
         "✅ /unblock [id] — Разбанить\n"
         "📋 /blocked — Список банов\n"
         "✖️ /cancel — Отмена рассылки\n\n"
-        "Чтобы ответить пользователю — просто сделайте <b>Reply</b> на сообщение с его ID."
+        "Чтобы ответить пользователю — просто сделайте <b>Reply</b> на сообщение-карточку с его ID."
     )
 
 @dp.message(Command("stats"), F.from_user.id == ADMIN_ID)
@@ -68,7 +75,7 @@ async def admin_block(message: Message):
     if message.reply_to_message:
         try:
             reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-            uid = int(reply_text.split("ID:")[1].split("\n")[0].strip())
+            uid = extract_user_id(reply_text)
         except: pass
     elif len(message.text.split()) > 1:
         try: uid = int(message.text.split()[1])
@@ -86,13 +93,14 @@ async def admin_unblock(message: Message):
     try:
         uid = int(message.text.split()[1])
         with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("DELETE FROM blocked_users WHERE user_id = ?", (uid,))
+            conn.
+[08.08.2026 23:09] ゛: execute("DELETE FROM blocked_users WHERE user_id = ?", (uid,))
         await message.answer(f"✅ Пользователь {uid} разблокирован.")
     except:
         await message.answer("Пример: /unblock 12345678")
 
 @dp.message(Command("blocked"), F.from_user.id == ADMIN_ID)
-[08.08.2026 23:05] ゛: async def admin_blocked_list(message: Message):
+async def admin_blocked_list(message: Message):
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("SELECT user_id FROM blocked_users").fetchall()
     text = "\n".join([f"• {r[0]}" for r in rows]) if rows else "Список пуст."
@@ -131,7 +139,7 @@ async def handle_private(message: Message):
         if message.reply_to_message:
             try:
                 reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-                target_id = int(reply_text.split("ID:")[1].split("\n")[0].strip())
+                target_id = extract_user_id(reply_text)
                 
                 await message.send_copy(chat_id=target_id)
                 await message.answer("✅ Ответ отправлен.")
@@ -153,7 +161,6 @@ async def handle_private(message: Message):
         f"---------------------------"
     )
     await bot.send_message(chat_id=ADMIN_ID, text=info_text)
-    
     await message.send_copy(chat_id=ADMIN_ID)
 
 async def main():
