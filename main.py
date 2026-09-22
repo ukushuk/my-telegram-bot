@@ -4,8 +4,8 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-import json
 
+from flask import Flask, request
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -183,33 +183,22 @@ async def ignore_media(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("⚠️ Бот принимает только текстовые сообщения и стикеры.")
 
-# --- ОФИЦИАЛЬНЫЙ WSGI ОБРАБОТЧИК ДЛЯ ВЕБХУКОВ VERCEL ---
+# --- ИНТЕГРАЦИЯ FLASK ДЛЯ VERCEL PYTHON RUNTIME ---
 init_db()
+app = Flask(__name__)
 
-class SimpleWSGIApp:
-    def __init__(self, environ, start_response):
-        self.environ = environ
-        self.start_response = start_response
-
-    def __iter__(self):
-        if self.environ.get("REQUEST_METHOD") == "POST":
+@app.route('/', methods=['POST', 'GET'])
+def webhook_handler():
+    if request.method == 'POST':
+        update_dict = request.get_json(silent=True)
+        if update_dict:
+            # Асинхронно скармливаем апдейт в aiogram
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             try:
-                request_body_size = int(self.environ.get('CONTENT_LENGTH', 0))
-                request_body = self.environ['wsgi.input'].read(request_body_size)
-                update_dict = json.loads(request_body.decode('utf-8'))
-                
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
                 update = Update.model_validate(update_dict, context={"bot": bot})
                 loop.run_until_complete(dp.feed_update(bot, update))
+            finally:
                 loop.close()
-            except Exception as e:
-                logging.error(f"Error processing update: {e}")
-
-        status = '200 OK'
-        response_headers = [('Content-type', 'text/plain; charset=utf-8')]
-        self.start_response(status, response_headers)
-        yield b"OK"
-
-# Vercel требует, чтобы эта переменная была на самом верхнем уровне файла
-handler = SimpleWSGIApp
+        return "OK", 200
+    return "Vercel Webhook Server is Running", 200
