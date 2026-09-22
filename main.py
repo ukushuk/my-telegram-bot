@@ -183,10 +183,9 @@ async def ignore_media(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("⚠️ Бот принимает только текстовые сообщения и стикеры.")
 
-# --- ЧИСТЫЙ WSGI / ОБРАБОТЧИК ДЛЯ ВЕБХУКОВ VERCEL ---
+# --- ОФИЦИАЛЬНЫЙ WSGI ОБРАБОТЧИК ДЛЯ ВЕБХУКОВ VERCEL ---
 init_db()
 
-# Официальная обертка WSGI приложения для Vercel Python Runtime
 class SimpleWSGIApp:
     def __init__(self, environ, start_response):
         self.environ = environ
@@ -199,7 +198,6 @@ class SimpleWSGIApp:
                 request_body = self.environ['wsgi.input'].read(request_body_size)
                 update_dict = json.loads(request_body.decode('utf-8'))
                 
-                # Синхронный запуск асинхронной обработки aiogram
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 update = Update.model_validate(update_dict, context={"bot": bot})
@@ -213,6 +211,5 @@ class SimpleWSGIApp:
         self.start_response(status, response_headers)
         yield b"OK"
 
-# Точка входа, которую ищет Vercel на верхнем уровне
-def handler(environ, start_response):
-    return SimpleWSGIApp(environ, start_response)
+# Vercel требует, чтобы эта переменная была на самом верхнем уровне файла
+handler = SimpleWSGIApp
