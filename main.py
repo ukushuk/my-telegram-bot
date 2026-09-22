@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+import json
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -12,13 +13,14 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message
+from aiogram.types import Message, Update
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
-DB_PATH = Path("bot_data.sqlite3")
+# В Vercel сохранять файлы можно только в папку /tmp
+DB_PATH = Path("/tmp/bot_data.sqlite3")
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -42,6 +44,8 @@ def extract_user_id(text: str) -> int:
             return int(line.replace("ID:", "").strip())
     raise ValueError("ID не найден в тексте")
 
+# --- КОМАНДЫ АДМИНИСТРАТОРА ---
+
 @dp.message(Command("start"), F.from_user.id == ADMIN_ID)
 async def admin_start(message: Message):
     await message.answer("🛠 <b>Панель администратора включена.</b>\nВведите /help для списка команд.")
@@ -50,12 +54,12 @@ async def admin_start(message: Message):
 async def admin_help(message: Message):
     await message.answer(
         "📣 /broadcast — Рассылка всем\n"
-        "📊 /stats — Статистика и ТОП\n"
+        "📊 /stats — Статистика\n"
         "🚫 /block [id] — Забанить (или Reply на сообщение)\n"
         "✅ /unblock [id] — Разбанить\n"
         "📋 /blocked — Список банов\n"
         "✖️ /cancel — Отмена рассылки\n\n"
-        "Чтобы ответить пользователю — просто сделайте <b>Reply</b> на сообщение-карточку с его ID."
+        "Чтобы ответить пользователю — просто сделайте <b>Reply</b> на инфо-карточку."
     )
 
 @dp.message(Command("stats"), F.from_user.id == ADMIN_ID)
@@ -63,13 +67,10 @@ async def admin_stats(message: Message):
     with sqlite3.connect(DB_PATH) as conn:
         total = conn.execute("SELECT COUNT(*) FROM forwarded_messages").fetchone()
         unique = conn.execute("SELECT COUNT(DISTINCT user_id) FROM forwarded_messages").fetchone()
-        top = conn.execute("SELECT user_id, COUNT(*) as c FROM forwarded_messages GROUP BY user_id ORDER BY c DESC LIMIT 5").fetchall()
     
     total_val = total[0] if total else 0
     unique_val = unique[0] if unique else 0
-    top_text = "\n".join([f"👤 {u[0]}: {u[1]} сообщ." for u in top]) if top else "Нет данных"
-    
-    await message.answer(f"📊 <b>Статистика:</b>\nВсего сообщений: {total_val}\nЛюдей: {unique_val}\n\n<b>ТОП 5:</b>\n{top_text}")
+    await message.answer(f"📊 <b>Статистика:</b>\nВсего сообщений: {total_val}\nЛюдей: {unique_val}")
 
 @dp.message(Command("block"), F.from_user.id == ADMIN_ID)
 async def admin_block(message: Message):
@@ -88,7 +89,7 @@ async def admin_block(message: Message):
             conn.execute("INSERT OR IGNORE INTO blocked_users (user_id) VALUES (?)", (uid,))
         await message.answer(f"🚫 Пользователь {uid} заблокирован.")
     else:
-        await message.answer("Укажите ID или ответьте на сообщение-карточку пользователя.")
+        await message.answer("Укажите ID или ответьте на сообщение-карточку.")
 
 @dp.message(Command("unblock"), F.from_user.id == ADMIN_ID)
 async def admin_unblock(message: Message):
@@ -114,7 +115,7 @@ async def admin_cancel(message: Message, state: FSMContext):
 
 @dp.message(Command("broadcast"), F.from_user.id == ADMIN_ID)
 async def admin_broad(message: Message, state: FSMContext):
-    await message.answer("Введите сообщение для рассылки (это может быть текст, фото, стикер или любое медиа):")
+    await message.answer("Введите сообщение для рассылки (это может быть текст или стикер):")
     await state.set_state(BroadcastStates.waiting_for_content)
 
 @dp.message(BroadcastStates.waiting_for_content, F.from_user.id == ADMIN_ID)
@@ -124,28 +125,37 @@ async def admin_broad_send(message: Message, state: FSMContext):
     count = 0
     for (uid,) in users:
         try:
-            await message.send_copy(chat_id=uid)
+            if message.text:
+                await bot.send_message(chat_id=uid, text=message.text)
+            elif message.sticker:
+                await bot.send_sticker(chat_id=uid, sticker=message.sticker.file_id)
             count += 1
             await asyncio.sleep(0.05)
         except: pass
     await message.answer(f"✅ Рассылка завершена. Отправлено: {count}")
     await state.clear()
 
+# --- ПРИЕМ ТЕКСТА И СТИКЕРОВ ОТ ПОЛЬЗОВАТЕЛЕЙ ---
+
 @dp.message(CommandStart())
 async def user_start(message: Message):
     await message.answer("━━━━━━━━━━━━━\n° 𝔠𝔩𝔞𝔴 𝔫𝔬𝔦𝔯\n━━━━━━━━━━━━━━\n\n— Приветствую. Что тебя сюда занесло?)")
 
-@dp.message(F.chat.type == "private")
-async def handle_private(message: Message):
+@dp.message(F.chat.type == "private", F.text | F.sticker)
+async def handle_private_message(message: Message):
     if message.from_user.id == ADMIN_ID:
         if message.reply_to_message:
             try:
                 reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
                 target_id = extract_user_id(reply_text)
-                await message.send_copy(chat_id=target_id)
+                
+                if message.text:
+                    await bot.send_message(chat_id=target_id, text=message.text)
+                elif message.sticker:
+                    await bot.send_sticker(chat_id=target_id, sticker=message.sticker.file_id)
                 await message.answer("✅ Ответ отправлен.")
             except Exception:
-                await message.answer("❌ Ошибка: Сделайте Reply именно на инфо-карточку, где написан ID пользователя.")
+                await message.answer("❌ Ошибка: Сделайте Reply именно на инфо-карточку, где написан ID.")
         return
 
     if is_blocked(message.from_user.id):
@@ -161,13 +171,29 @@ async def handle_private(message: Message):
         f"ID:{message.from_user.id}\n"
         f"---------------------------"
     )
-    await bot.send_message(chat_id=ADMIN_ID, text=info_text)
-    await message.send_copy(chat_id=ADMIN_ID)
+    
+    if message.text:
+        await bot.send_message(chat_id=ADMIN_ID, text=f"{info_text}\n{message.text}")
+    elif message.sticker:
+        await bot.send_message(chat_id=ADMIN_ID, text=info_text)
+        await bot.send_sticker(chat_id=ADMIN_ID, sticker=message.sticker.file_id)
 
-async def main():
+@dp.message(F.chat.type == "private")
+async def ignore_media(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⚠️ Бот принимает только текстовые сообщения и стикеры.")
+
+# --- WSGI / ОБРАБОТЧИК ДЛЯ VERCEL ---
+async def process_update(update_dict):
     init_db()
-    logging.info("🚀 Бот запущен на постоянную работу!")
-    await dp.start_polling(bot)
+    update = Update.model_validate(update_dict, context={"bot": bot})
+    await dp.feed_update(bot, update)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def handler(request):
+    # Метод Vercel вызывает эту функцию при каждом вебхуке от Telegram
+    if request.method == "POST":
+        body = request.body.decode("utf-8")
+        update_dict = json.loads(body)
+        asyncio.run(process_update(update_dict))
+        return {"statusCode": 200, "body": "OK"}
+    return {"statusCode": 200, "body": "Vercel Server is Running"}
