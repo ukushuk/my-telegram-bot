@@ -183,17 +183,36 @@ async def ignore_media(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("⚠️ Бот принимает только текстовые сообщения и стикеры.")
 
-# --- WSGI / ОБРАБОТЧИК ДЛЯ VERCEL ---
-async def process_update(update_dict):
-    init_db()
-    update = Update.model_validate(update_dict, context={"bot": bot})
-    await dp.feed_update(bot, update)
+# --- ЧИСТЫЙ WSGI / ОБРАБОТЧИК ДЛЯ ВЕБХУКОВ VERCEL ---
+init_db()
 
-def handler(request):
-    # Метод Vercel вызывает эту функцию при каждом вебхуке от Telegram
-    if request.method == "POST":
-        body = request.body.decode("utf-8")
-        update_dict = json.loads(body)
-        asyncio.run(process_update(update_dict))
-        return {"statusCode": 200, "body": "OK"}
-    return {"statusCode": 200, "body": "Vercel Server is Running"}
+# Официальная обертка WSGI приложения для Vercel Python Runtime
+class SimpleWSGIApp:
+    def __init__(self, environ, start_response):
+        self.environ = environ
+        self.start_response = start_response
+
+    def __iter__(self):
+        if self.environ.get("REQUEST_METHOD") == "POST":
+            try:
+                request_body_size = int(self.environ.get('CONTENT_LENGTH', 0))
+                request_body = self.environ['wsgi.input'].read(request_body_size)
+                update_dict = json.loads(request_body.decode('utf-8'))
+                
+                # Синхронный запуск асинхронной обработки aiogram
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                update = Update.model_validate(update_dict, context={"bot": bot})
+                loop.run_until_complete(dp.feed_update(bot, update))
+                loop.close()
+            except Exception as e:
+                logging.error(f"Error processing update: {e}")
+
+        status = '200 OK'
+        response_headers = [('Content-type', 'text/plain; charset=utf-8')]
+        self.start_response(status, response_headers)
+        yield b"OK"
+
+# Точка входа, которую ищет Vercel на верхнем уровне
+def handler(environ, start_response):
+    return SimpleWSGIApp(environ, start_response)
