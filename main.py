@@ -4,6 +4,9 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from threading import Thread
+
+from flask import Flask
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -11,20 +14,40 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, BotCommand
+from aiogram.types import Message
 
-from keep_alive import keep_alive
-
+# Настройка логирования в консоль
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+
+# Конфигурация из настроек Environment Variables на Render
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 DB_PATH = Path("bot_data.sqlite3")
 
+# Инициализация бота и диспетчера aiogram 3.x
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
 class BroadcastStates(StatesGroup):
     waiting_for_content = State()
+
+# --- ВСТРОЕННЫЙ FLASK СЕРВЕР ДЛЯ RENDER И UPTIME ROBOT ---
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return "I am alive", 200
+
+def run_flask():
+    # Render передает нужный порт в переменную PORT. Если её нет, используем 8080
+    port = int(os.environ.get("PORT", 8080))
+    logging.info(f"🌐 Flask сервер для Render запущен на порту {port}")
+    flask_app.run(host='0.0.0.0', port=port)
+
+def start_keep_alive():
+    t = Thread(target=run_flask, daemon=True)
+    t.start()
+# ------------------------------------------------------
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -36,7 +59,6 @@ def is_blocked(user_id):
     with sqlite3.connect(DB_PATH) as conn:
         return conn.execute("SELECT 1 FROM blocked_users WHERE user_id = ?", (user_id,)).fetchone() is not None
 
-# Функция для безопасного извлечения ID из инфо-карточки
 def extract_user_id(text: str) -> int:
     for line in text.split("\n"):
         if line.startswith("ID:"):
@@ -66,8 +88,11 @@ async def admin_stats(message: Message):
         unique = conn.execute("SELECT COUNT(DISTINCT user_id) FROM forwarded_messages").fetchone()
         top = conn.execute("SELECT user_id, COUNT(*) as c FROM forwarded_messages GROUP BY user_id ORDER BY c DESC LIMIT 5").fetchall()
     
-    top_text = "\n".join([f"👤 {u}: {u} сообщ." for u in top])
-    await message.answer(f"📊 <b>Статистика:</b>\nВсего сообщений: {total[0] if total else 0}\nЛюдей: {unique[0] if unique else 0}\n\n<b>ТОП 5:</b>\n{top_text}")
+    total_val = total[0] if total else 0
+    unique_val = unique[0] if unique else 0
+    top_text = "\n".join([f"👤 {u[0]}: {u[1]} сообщ." for u in top]) if top else "Нет данных"
+    
+    await message.answer(f"📊 <b>Статистика:</b>\nВсего сообщений: {total_val}\nЛюдей: {unique_val}\n\n<b>ТОП 5:</b>\n{top_text}")
 
 @dp.message(Command("block"), F.from_user.id == ADMIN_ID)
 async def admin_block(message: Message):
@@ -78,7 +103,8 @@ async def admin_block(message: Message):
             uid = extract_user_id(reply_text)
         except: pass
     elif len(message.text.split()) > 1:
-        try: uid = int(message.text.split()[1])
+        try: 
+            uid = int(message.text.split()[1])
         except: pass
     
     if uid:
@@ -93,8 +119,7 @@ async def admin_unblock(message: Message):
     try:
         uid = int(message.text.split()[1])
         with sqlite3.connect(DB_PATH) as conn:
-            conn.
-[08.08.2026 23:22] ゛: execute("DELETE FROM blocked_users WHERE user_id = ?", (uid,))
+            conn.execute("DELETE FROM blocked_users WHERE user_id = ?", (uid,))
         await message.answer(f"✅ Пользователь {uid} разблокирован.")
     except:
         await message.answer("Пример: /unblock 12345678")
@@ -125,6 +150,7 @@ async def admin_broad_send(message: Message, state: FSMContext):
         try:
             await message.send_copy(chat_id=uid)
             count += 1
+            await asyncio.sleep(0.05)  # Защита от лимитов Telegram (Flood Control)
         except: pass
     await message.answer(f"✅ Рассылка завершена. Отправлено: {count}")
     await state.clear()
@@ -135,7 +161,6 @@ async def user_start(message: Message):
 
 @dp.message(F.chat.type == "private")
 async def handle_private(message: Message):
-    # Если пишет АДМИНИСТРАТОР
     if message.from_user.id == ADMIN_ID:
         if message.reply_to_message:
             try:
@@ -144,11 +169,10 @@ async def handle_private(message: Message):
                 
                 await message.send_copy(chat_id=target_id)
                 await message.answer("✅ Ответ отправлен.")
-            except Exception as e:
+            except Exception:
                 await message.answer("❌ Ошибка: Сделайте Reply именно на инфо-карточку, где написан ID пользователя.")
         return
 
-    # Если пишет обычный ПОЛЬЗОВАТЕЛЬ
     if is_blocked(message.from_user.id):
         return
 
@@ -156,7 +180,6 @@ async def handle_private(message: Message):
         conn.execute("INSERT INTO forwarded_messages (user_id) VALUES (?)", (message.from_user.id,))
         conn.commit()
 
-    # Сначала бот шлет инфо-карточку
     info_text = (
         f"📩 <b>Новое сообщение</b>\n"
         f"От: {message.from_user.full_name}\n"
@@ -164,14 +187,12 @@ async def handle_private(message: Message):
         f"---------------------------"
     )
     await bot.send_message(chat_id=ADMIN_ID, text=info_text)
-    
-    # Следом бот пересылает само медиа (фото, голос, стикер, видео)
     await message.send_copy(chat_id=ADMIN_ID)
 
 async def main():
     init_db()
-    keep_alive()
+    start_keep_alive()  # Запускаем Flask в отдельном потоке
     await dp.start_polling(bot)
 
-if name == "__main__":
+if __name__ == "__main__":
     asyncio.run(main())
