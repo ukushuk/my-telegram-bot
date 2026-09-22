@@ -4,9 +4,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from threading import Thread
 
-from flask import Flask
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -16,38 +14,17 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 
-# Настройка логирования в консоль
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# Конфигурация из настроек Environment Variables на Render
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 DB_PATH = Path("bot_data.sqlite3")
 
-# Инициализация бота и диспетчера aiogram 3.x
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
 class BroadcastStates(StatesGroup):
     waiting_for_content = State()
-
-# --- ВСТРОЕННЫЙ FLASK СЕРВЕР ДЛЯ RENDER И UPTIME ROBOT ---
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-def home():
-    return "I am alive", 200
-
-def run_flask():
-    # Render передает нужный порт в переменную PORT. Если её нет, используем 8080
-    port = int(os.environ.get("PORT", 8080))
-    logging.info(f"🌐 Flask сервер для Render запущен на порту {port}")
-    flask_app.run(host='0.0.0.0', port=port)
-
-def start_keep_alive():
-    t = Thread(target=run_flask, daemon=True)
-    t.start()
-# ------------------------------------------------------
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -103,8 +80,7 @@ async def admin_block(message: Message):
             uid = extract_user_id(reply_text)
         except: pass
     elif len(message.text.split()) > 1:
-        try: 
-            uid = int(message.text.split()[1])
+        try: uid = int(message.text.split()[1])
         except: pass
     
     if uid:
@@ -150,7 +126,7 @@ async def admin_broad_send(message: Message, state: FSMContext):
         try:
             await message.send_copy(chat_id=uid)
             count += 1
-            await asyncio.sleep(0.05)  # Защита от лимитов Telegram (Flood Control)
+            await asyncio.sleep(0.05)
         except: pass
     await message.answer(f"✅ Рассылка завершена. Отправлено: {count}")
     await state.clear()
@@ -166,7 +142,6 @@ async def handle_private(message: Message):
             try:
                 reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
                 target_id = extract_user_id(reply_text)
-                
                 await message.send_copy(chat_id=target_id)
                 await message.answer("✅ Ответ отправлен.")
             except Exception:
@@ -191,7 +166,7 @@ async def handle_private(message: Message):
 
 async def main():
     init_db()
-    start_keep_alive()  # Запускаем Flask в отдельном потоке
+    logging.info("🚀 Бот запущен на постоянную работу!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
